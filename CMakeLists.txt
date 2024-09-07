@@ -11,6 +11,7 @@ find_package(Boost REQUIRED COMPONENTS
 
 find_package(OpenCV REQUIRED)
 
+find_package(TBB REQUIRED)
 
 include_directories(
     ${Boost_INCLUDE_DIRS}
@@ -24,6 +25,7 @@ add_executable(${PROJECT_NAME}_render
 target_link_libraries(${PROJECT_NAME}_render
     ${Boost_LIBRARIES}
     ${OpenCV_LIBRARIES}
+    TBB::tbb
 )
 set_target_properties(${PROJECT_NAME}_render
     PROPERTIES

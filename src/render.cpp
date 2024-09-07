@@ -1,4 +1,5 @@
 #include <chrono>
+#include <execution>
 #include <fstream>
 #include <iostream>
 #include <optional>
@@ -15,7 +16,6 @@ namespace po = boost::program_options;
 
 constexpr char OPT_HELP[] = "help";
 constexpr char OPT_FILE[] = "FILE";
-constexpr char OPT_DISPLAY_COUNT[] = "display-count";
 constexpr char OPT_MIN_RA[] = "min-ra";
 constexpr char OPT_MAX_RA[] = "max-ra";
 constexpr char OPT_MIN_DEC[] = "min-dec";
@@ -123,6 +123,31 @@ std::optional<Star> parse_star_record(const std::vector<std::string>& record, st
 }
 
 
+template <class Clock = std::chrono::high_resolution_clock>
+class Stopwatch {
+    public:
+        Stopwatch();
+
+        float elapsed() const;
+
+    private:
+        const typename Clock::time_point start;
+};
+
+
+template <class Clock>
+Stopwatch<Clock>::Stopwatch():
+        start(Clock::now())
+{}
+
+
+template <class Clock>
+float Stopwatch<Clock>::elapsed() const {
+    const auto stop = Clock::now();
+    return static_cast<float>(std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count()) / 1000;
+}
+
+
 std::vector<Star> read_stars(
         const std::string& path,
         const double min_ra,
@@ -132,35 +157,52 @@ std::vector<Star> read_stars(
         const double max_magnitude
 ) {
     std::vector<Star> stars;
-    std::size_t skipped_rows = 0;
-    std::size_t i = 0;
     {
-        std::ifstream file(path);
-        stars.reserve(
-            std::count(
-                std::istreambuf_iterator<char>(file),
-                std::istreambuf_iterator<char>(),
-                '\n'
-            )
-        );
-        file.seekg(0);
-        for (std::string line; std::getline(file, line);) {
-            i++;
-            std::vector<std::string> record;
-            record.reserve(35);
-            boost::split(
-                record,
-                line,
-                boost::is_any_of("|")
+        std::vector<std::vector<std::string>> records;
+        const Stopwatch start_reading;
+        float reading_elapsed;
+        {
+            std::vector<std::string> rows;
+            {
+                std::ifstream file(path);
+                file.seekg(0, std::ios::end);
+                rows.reserve(file.tellg());
+                file.seekg(0);
+                for (std::string line; std::getline(file, line);)
+                    rows.emplace_back(std::move(line));
+                reading_elapsed = start_reading.elapsed();
+                std::cout << "Time taken to read catalog: " << reading_elapsed << std::endl;
+            }
+
+            records.resize(rows.size());
+            std::transform(
+                std::execution::par_unseq,
+                rows.cbegin(),
+                rows.cend(),
+                records.begin(),
+                [] (const std::string& row) {
+                    std::vector<std::string> record;
+                    boost::split(
+                        record,
+                        row,
+                        boost::is_any_of("|")
+                    );
+                    return record;
+                }
             );
+        }
+
+        std::size_t i = 0;
+        std::size_t skipped_rows = 0;
+        for (const auto& record : records) {
+            i++;
             std::string errmes;
             const auto star = parse_star_record(record, errmes);
-            if (!star.has_value()) {
+            if (not star.has_value()) {
                 skipped_rows++;
-                if (skipped_rows <= 10) {
+                if (skipped_rows <= 10)
                     std::cerr << boost::format("Skipping row %1% due to error: %2%") % (i-1) % errmes << std::endl;
-                    std::cerr << "Problematic row: " << line << std::endl;
-                } else if (skipped_rows == 11)
+                else if (skipped_rows == 11)
                     std::cerr << "Further skipped rows will not be printed..." << std::endl;
                 continue;
             }
@@ -184,40 +226,11 @@ std::vector<Star> read_stars(
             stars.push_back(star.value());
         }
         stars.shrink_to_fit();
+        std::cout << "Time taken to parsing: " << (start_reading.elapsed() - reading_elapsed) << std::endl;
     }
-
-    std::cout << "Total rows: " << i << std::endl;
-    std::cout << "Total rows skipped: " << skipped_rows << std::endl;
-    std::cout << "Total stars read: " << (i - skipped_rows) << std::endl;
-    std::cout << "Total stars filtered: " << stars.size() << std::endl;
 
     return stars;
 };
-
-
-template <class Clock>
-class Stopwatch {
-    public:
-        Stopwatch();
-
-        float elapsed() const;
-
-    private:
-        const typename Clock::time_point start;
-};
-
-
-template <class Clock>
-Stopwatch<Clock>::Stopwatch():
-        start(Clock::now())
-{}
-
-
-template <class Clock>
-float Stopwatch<Clock>::elapsed() const {
-    const auto stop = Clock::now();
-    return static_cast<float>(std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count()) / 1000;
-}
 
 
 void render_stars(
@@ -247,8 +260,6 @@ void render_stars(
     );
     const auto min_mag = min_mag_star->mag;
     const auto max_mag = max_mag_star->mag;
-
-    std::cout << boost::format("Magnitude range: %1$.3f to %2$.3f") % min_mag % max_mag << std::endl;
 
     const auto ra_range = max_ra - min_ra;
     const auto dec_range = max_dec - min_dec;
@@ -288,7 +299,6 @@ int main(int argc, char** argv) {
 
         po::options_description filter_options("Filter options");
         filter_options.add_options()
-            (OPT_DISPLAY_COUNT, po::value<uint32_t>()->default_value(10), "Number of stars to display (0 for all)")
             (OPT_MIN_RA, po::value<double>()->default_value(0), "Minimum Right Ascension (degrees)")
             (OPT_MAX_RA, po::value<double>()->default_value(360), "Maximum Right Ascension (degrees)")
             (OPT_MIN_DEC, po::value<double>()->default_value(-90), "Minimum Declination (degrees)")
@@ -330,7 +340,6 @@ int main(int argc, char** argv) {
     std::cout << boost::format("Dec range: %1% to %2%") % vm[OPT_MIN_DEC].as<double>() % vm[OPT_MAX_DEC].as<double>() << std::endl;
     std::cout << boost::format("Max magnitude: %1%") % vm[OPT_MAX_MAGNITUDE].as<double>() << std::endl;
 
-    const Stopwatch<std::chrono::high_resolution_clock> read_start;
     const auto stars = read_stars(
         vm[OPT_FILE].as<std::string>(),
         vm[OPT_MIN_RA].as<double>(),
@@ -339,22 +348,7 @@ int main(int argc, char** argv) {
         vm[OPT_MAX_DEC].as<double>(),
         vm[OPT_MAX_MAGNITUDE].as<double>()
     );
-    const auto read_duration = read_start.elapsed();
-
-    std::cout << "Time taken to read and filter stars: " << read_duration << std::endl;
-    std::cout << std::endl;
-
-    {
-        const uint32_t display_count = vm[OPT_DISPLAY_COUNT].as<uint32_t>();
-        std::cout << boost::format("First %1% stars:") % display_count << std::endl;
-        uint32_t i = 0;
-        for (const auto& star : stars) {
-            if (i >= display_count && display_count != 0)
-                break;
-            std::cout << boost::format("Star %1%: RA=%2$.2f, Dec=%3$.2f, Mag=%4$.2f") % i % star.ra_deg % star.de_deg % star.mag << std::endl;
-            i++;
-        }
-    }
+    std::cout << "Total stars: " << stars.size() << std::endl;
 
     cv::Mat img;
     const Stopwatch<std::chrono::high_resolution_clock> render_start;
@@ -373,7 +367,6 @@ int main(int argc, char** argv) {
 
     std::cout << "Time taken to render and save image: " << render_duration << std::endl;
     std::cout << "Image saved as: " << vm[OPT_OUTPUT].as<std::string>() << std::endl;
-    std::cout << "Total time elapsed: " << read_start.elapsed() << std::endl;
 
     return 0;
 }
