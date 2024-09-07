@@ -168,6 +168,7 @@ std::vector<Star> read_stars(
                     std::cerr << "Further skipped rows will not be printed..." << std::endl;
                 }
             }
+            i++;
         }
     }
 
