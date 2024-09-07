@@ -49,39 +49,31 @@ struct Star {
 std::optional<double> parse_field(
         const std::vector<std::string>& record,
         const size_t index,
-        const std::string& field_name
-) {
+        const std::string& field_name,
+        std::string& errmes
+ ) noexcept {
     double value;
 
     try {
         value = std::stod(record.at(index));
     }
     catch (const std::out_of_range&) {
-        throw std::runtime_error(
-            (
-                boost::format("Missing field: %1%") % field_name
-            ).str()
-        );
+        errmes = (boost::format("Missing field: %1%") % field_name).str();
+        return {};
     }
     catch (const std::invalid_argument& e) {
-        throw std::runtime_error(
-            (
-                boost::format("Failed to parse %1%. %2%") % field_name % e.what()
-            ).str()
-        );
+        errmes = (boost::format("Failed to parse %1%. (%2%)") % field_name % e.what()).str();
+        return {};
     }
     
     return value;
 }
 
 
-double parse_magnitude(const std::vector<std::string>& record) {
-    std::optional<double> bt_mag, vt_mag;
-    try {
-        bt_mag = parse_field(record, 17, "BT magnitude");
-        vt_mag = parse_field(record, 19, "VT magnitude");
-    }
-    catch (const std::runtime_error&) {};
+std::optional<double> parse_magnitude(const std::vector<std::string>& record, std::string& errmes) noexcept {
+    std::string b_err, v_err;
+    const std::optional<double> bt_mag = parse_field(record, 17, "BT magnitude", b_err);
+    const std::optional<double> vt_mag = parse_field(record, 19, "VT magnitude", v_err);
 
     if (bt_mag) {
         const auto bt = bt_mag.value();
@@ -100,21 +92,33 @@ double parse_magnitude(const std::vector<std::string>& record) {
             // std::cout << boost::format("Debug: Using VT_Mag as V_Mag = %1$.3f") % vt << std::endl;
             return vt;
         } else {
-            throw std::runtime_error("Missing magnitude");
+            errmes = "Missing magnitude. ";
+            errmes += b_err;
+            errmes += ". ";
+            errmes += v_err;
+            return {};
         }
     }
 }
 
 
-Star parse_star_record(const std::vector<std::string>& record) {
-    const auto ra = parse_field(record, 24, "RA");
-    const auto dec = parse_field(record, 25, "Dec");
-    const auto mag = parse_magnitude(record);
+std::optional<Star> parse_star_record(const std::vector<std::string>& record, std::string& errmes) noexcept {
+    const auto ra = parse_field(record, 24, "RA", errmes);
+    if (!ra.has_value())
+        return {};
+
+    const auto dec = parse_field(record, 25, "Dec", errmes);
+    if (!dec.has_value())
+        return {};
+
+    const auto mag = parse_magnitude(record, errmes);
+    if (!mag.has_value())
+        return {};
 
     return Star(
         ra.value(),
         dec.value(),
-        mag
+        mag.value()
     );
 }
 
@@ -129,10 +133,19 @@ std::vector<Star> read_stars(
 ) {
     std::vector<Star> stars;
     std::size_t skipped_rows = 0;
+    std::size_t i = 0;
     {
         std::ifstream file(path);
-        std::size_t i = 0;
+        stars.reserve(
+            std::count(
+                std::istreambuf_iterator<char>(file),
+                std::istreambuf_iterator<char>(),
+                '\n'
+            )
+        );
+        file.seekg(0);
         for (std::string line; std::getline(file, line);) {
+            i++;
             std::vector<std::string> record;
             record.reserve(35);
             boost::split(
@@ -140,40 +153,43 @@ std::vector<Star> read_stars(
                 line,
                 boost::is_any_of("|")
             );
-            try {
-                const auto star = parse_star_record(record);
-                if (
-                        star.ra_deg >= min_ra
-                        &&
-                        star.ra_deg <= max_ra
-                        &&
-                        star.de_deg >= min_dec
-                        &&
-                        star.de_deg <= max_dec
-                        &&
-                        star.mag <= max_magnitude
-                ) {
-                    if ((i % 10000) == 0)
-                        std::cout << boost::format("Star %1%: RA=%2%, Dec=%3%, Mag=%4%") % i % star.ra_deg % star.de_deg % star.mag << std::endl;
-                    
-                    stars.push_back(star);
-                }
-            }
-            catch (const std::runtime_error& e) {
+            std::string errmes;
+            const auto star = parse_star_record(record, errmes);
+            if (!star.has_value()) {
                 skipped_rows++;
                 if (skipped_rows <= 10) {
-                    std::cerr << boost::format("Skipping row %1% due to error: %2%") % i % e.what() << std::endl;
-                    std::cerr << boost::format("Problematic row: %1%") % line << std::endl;
-                } else if (skipped_rows == 11) {
+                    std::cerr << boost::format("Skipping row %1% due to error: %2%") % (i-1) % errmes << std::endl;
+                    std::cerr << "Problematic row: " << line << std::endl;
+                } else if (skipped_rows == 11)
                     std::cerr << "Further skipped rows will not be printed..." << std::endl;
-                }
+                continue;
             }
-            i++;
+
+            if (
+                    star->ra_deg < min_ra
+                    ||
+                    star->ra_deg > max_ra
+                    ||
+                    star->de_deg < min_dec
+                    ||
+                    star->de_deg > max_dec
+                    ||
+                    star->mag > max_magnitude
+            )
+                continue;
+
+            if ((i % 10000) == 0)
+                std::cout << boost::format("Star %1%: RA=%2%, Dec=%3%, Mag=%4%") % i % star->ra_deg % star->de_deg % star->mag << std::endl;
+
+            stars.push_back(star.value());
         }
+        stars.shrink_to_fit();
     }
 
-    std::cout << "Total stars read and filtered: " << stars.size() << std::endl;
+    std::cout << "Total rows: " << i << std::endl;
     std::cout << "Total rows skipped: " << skipped_rows << std::endl;
+    std::cout << "Total stars read: " << (i - skipped_rows) << std::endl;
+    std::cout << "Total stars filtered: " << stars.size() << std::endl;
 
     return stars;
 };
@@ -322,7 +338,6 @@ int main(int argc, char** argv) {
     const auto read_duration = read_start.elapsed();
 
     std::cout << "Time taken to read and filter stars: " << read_duration << std::endl;
-    std::cout << "Total stars after filtering: " << stars.size() << std::endl;
     std::cout << std::endl;
 
     {
