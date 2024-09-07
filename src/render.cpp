@@ -232,6 +232,10 @@ void render_stars(
 ) {
     dst.create(height, width, CV_8UC1);
     cv::Mat img = dst.getMat();
+    img.setTo(0);
+
+    if (stars.size() == 0)
+        return;
 
     // Find the minimum and maximum magnitudes in the dataset
     const auto [min_mag_star, max_mag_star] = std::minmax_element(
