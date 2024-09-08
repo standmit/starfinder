@@ -1,14 +1,11 @@
 #include <chrono>
 #include <execution>
-#include <fstream>
 #include <iostream>
-#include <optional>
-#include <boost/algorithm/string/classification.hpp>
-#include <boost/algorithm/string/split.hpp>
 #include <boost/format.hpp>
 #include <boost/program_options.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <starfinder/parsing.hpp>
 
 
 namespace po = boost::program_options;
@@ -24,103 +21,6 @@ constexpr char OPT_MAX_MAGNITUDE[] = "max-magnitude";
 constexpr char OPT_WIDTH[] = "width";
 constexpr char OPT_HEIGHT[] = "height";
 constexpr char OPT_OUTPUT[] = "output";
-
-
-/**
- * \brief   Represents a star with its right ascension, declination, and magnitude.
- */
-struct Star {
-    const double ra_deg;
-    const double de_deg;
-    const double mag;
-
-    Star(
-                const double ra_deg,
-                const double de_deg,
-                const double mag
-    ) noexcept:
-            ra_deg(ra_deg),
-            de_deg(de_deg),
-            mag(mag)
-    {}
-};
-
-
-std::optional<double> parse_field(
-        const std::vector<std::string>& record,
-        const size_t index,
-        const std::string& field_name,
-        std::string& errmes
- ) noexcept {
-    double value;
-
-    try {
-        value = std::stod(record.at(index));
-    }
-    catch (const std::out_of_range&) {
-        errmes = (boost::format("Missing field: %1%") % field_name).str();
-        return {};
-    }
-    catch (const std::invalid_argument& e) {
-        errmes = (boost::format("Failed to parse %1%. (%2%)") % field_name % e.what()).str();
-        return {};
-    }
-    
-    return value;
-}
-
-
-std::optional<double> parse_magnitude(const std::vector<std::string>& record, std::string& errmes) noexcept {
-    std::string b_err, v_err;
-    const std::optional<double> bt_mag = parse_field(record, 17, "BT magnitude", b_err);
-    const std::optional<double> vt_mag = parse_field(record, 19, "VT magnitude", v_err);
-
-    if (bt_mag) {
-        const auto bt = bt_mag.value();
-        if (vt_mag) {
-            const auto vt = vt_mag.value();
-            const auto v_mag = vt - 0.090 * (bt - vt);
-            // std::cout << boost::format("Debug: Calculated V_Mag = %1$.3f") % v_mag << std::endl;
-            return v_mag;
-        } else {
-            // std::cout << boost::format("Debug: Using BT_Mag as V_Mag = %1$.3f") % bt << std::endl;
-            return bt;
-        }
-    } else {
-        if (vt_mag) {
-            const auto vt = vt_mag.value();
-            // std::cout << boost::format("Debug: Using VT_Mag as V_Mag = %1$.3f") % vt << std::endl;
-            return vt;
-        } else {
-            errmes = "Missing magnitude. ";
-            errmes += b_err;
-            errmes += ". ";
-            errmes += v_err;
-            return {};
-        }
-    }
-}
-
-
-std::optional<Star> parse_star_record(const std::vector<std::string>& record, std::string& errmes) noexcept {
-    const auto ra = parse_field(record, 24, "RA", errmes);
-    if (!ra.has_value())
-        return {};
-
-    const auto dec = parse_field(record, 25, "Dec", errmes);
-    if (!dec.has_value())
-        return {};
-
-    const auto mag = parse_magnitude(record, errmes);
-    if (!mag.has_value())
-        return {};
-
-    return Star(
-        ra.value(),
-        dec.value(),
-        mag.value()
-    );
-}
 
 
 template <class Clock = std::chrono::high_resolution_clock>
@@ -150,85 +50,23 @@ float Stopwatch<Clock>::elapsed() const {
 }
 
 
-std::vector<Star> read_stars(const std::string& path) {
-    std::vector<Star> stars;
-    {
-        std::vector<std::vector<std::string>> records;
-        const Stopwatch start_reading;
-        float reading_elapsed;
-        {
-            std::vector<std::string> rows;
-            {
-                std::ifstream file(path);
-                file.seekg(0, std::ios::end);
-                rows.reserve(file.tellg());
-                file.seekg(0);
-                for (std::string line; std::getline(file, line);)
-                    rows.emplace_back(std::move(line));
-                reading_elapsed = start_reading.elapsed();
-                std::cout << "Time taken to read catalog: " << reading_elapsed << std::endl;
-            }
-
-            records.resize(rows.size());
-            std::transform(
-                std::execution::par_unseq,
-                rows.cbegin(),
-                rows.cend(),
-                records.begin(),
-                [] (const std::string& row) {
-                    std::vector<std::string> record;
-                    boost::split(
-                        record,
-                        row,
-                        boost::is_any_of("|")
-                    );
-                    return record;
-                }
-            );
-        }
-
-        std::size_t i = 0;
-        std::size_t skipped_rows = 0;
-        for (const auto& record : records) {
-            i++;
-            std::string errmes;
-            const auto star = parse_star_record(record, errmes);
-            if (not star.has_value()) {
-                skipped_rows++;
-                if (skipped_rows <= 10)
-                    std::cerr << boost::format("Skipping row %1% due to error: %2%") % (i-1) % errmes << std::endl;
-                else if (skipped_rows == 11)
-                    std::cerr << "Further skipped rows will not be printed..." << std::endl;
-                continue;
-            }
-
-            stars.push_back(star.value());
-        }
-        stars.shrink_to_fit();
-        std::cout << "Time taken to parsing: " << (start_reading.elapsed() - reading_elapsed) << std::endl;
-    }
-
-    return stars;
-};
-
-
-std::vector<Star> filter_stars(
-        const std::vector<Star>& all_stars,
+std::vector<starfinder::Star> filter_stars(
+        const std::vector<starfinder::Star>& all_stars,
         const double min_ra,
         const double max_ra,
         const double min_dec,
         const double max_dec,
         const double max_magnitude
 ) {
-    std::vector<Star> filtered_stars;
+    std::vector<starfinder::Star> filtered_stars;
     filtered_stars.reserve(all_stars.size());
     const Stopwatch filtering;
     std::copy_if(
-        std::execution::par,
+        std::execution::seq,
         all_stars.cbegin(),
         all_stars.cend(),
         std::back_inserter(filtered_stars),
-        [min_ra, max_ra, min_dec, max_dec, max_magnitude] (const Star& star) noexcept {
+        [min_ra, max_ra, min_dec, max_dec, max_magnitude] (const starfinder::Star& star) noexcept {
             return (
                 star.ra_deg >= min_ra
                 &&
@@ -249,7 +87,7 @@ std::vector<Star> filter_stars(
 
 
 void render_stars(
-        const std::vector<Star>& stars,
+        const std::vector<starfinder::Star>& stars,
         const uint32_t width,
         const uint32_t height,
         const double min_ra,
@@ -269,7 +107,7 @@ void render_stars(
     const auto [min_mag_star, max_mag_star] = std::minmax_element(
         stars.cbegin(),
         stars.cend(),
-        [] (const Star& a, const Star& b) {
+        [] (const starfinder::Star& a, const starfinder::Star& b) {
             return (a.mag < b.mag);
         }
     );
@@ -279,7 +117,7 @@ void render_stars(
     const auto ra_range = max_ra - min_ra;
     const auto dec_range = max_dec - min_dec;
     const auto mag_range = max_mag - min_mag;
-    for (const Star& star : stars) {
+    for (const starfinder::Star& star : stars) {
         const uint32_t x = (star.ra_deg - min_ra) / ra_range * width;
         const uint32_t y = (star.de_deg - min_dec) / dec_range * height;
 
@@ -356,7 +194,7 @@ int main(int argc, char** argv) {
     std::cout << boost::format("Max magnitude: %1%") % vm[OPT_MAX_MAGNITUDE].as<double>() << std::endl;
 
     const auto stars = filter_stars(
-        read_stars(vm[OPT_FILE].as<std::string>()),
+        starfinder::read_stars(vm[OPT_FILE].as<std::string>()),
         vm[OPT_MIN_RA].as<double>(),
         vm[OPT_MAX_RA].as<double>(),
         vm[OPT_MIN_DEC].as<double>(),
