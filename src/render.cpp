@@ -62,7 +62,7 @@ std::vector<starfinder::Star> filter_stars(
     filtered_stars.reserve(all_stars.size());
     const Stopwatch filtering;
     std::copy_if(
-        std::execution::seq,
+        std::execution::par_unseq,
         all_stars.cbegin(),
         all_stars.cend(),
         std::back_inserter(filtered_stars),
