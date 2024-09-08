@@ -68,13 +68,13 @@ std::vector<starfinder::Star> filter_stars(
         std::back_inserter(filtered_stars),
         [min_ra, max_ra, min_dec, max_dec, max_magnitude] (const starfinder::Star& star) noexcept {
             return (
-                star.ra_deg >= min_ra
+                star.ra >= min_ra
                 &&
-                star.ra_deg <= max_ra
+                star.ra <= max_ra
                 &&
-                star.de_deg >= min_dec
+                star.dec >= min_dec
                 &&
-                star.de_deg <= max_dec
+                star.dec <= max_dec
                 &&
                 star.mag <= max_magnitude
             );
@@ -118,8 +118,8 @@ void render_stars(
     const auto dec_range = max_dec - min_dec;
     const auto mag_range = max_mag - min_mag;
     for (const starfinder::Star& star : stars) {
-        const uint32_t x = (star.ra_deg - min_ra) / ra_range * width;
-        const uint32_t y = (star.de_deg - min_dec) / dec_range * height;
+        const uint32_t x = (star.ra - min_ra) / ra_range * width;
+        const uint32_t y = (star.dec - min_dec) / dec_range * height;
 
         if (x < width && y < height) {
             // Inverse the magnitude scale (brighter stars have lower magnitudes)

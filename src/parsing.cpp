@@ -11,12 +11,12 @@ namespace starfinder {
 
 
 Star::Star(
-            const double ra_deg_arg,
-            const double de_deg_arg,
+            const double ra_arg,
+            const double dec_arg,
             const double mag_arg
 ) noexcept :
-        ra_deg(ra_deg_arg),
-        de_deg(de_deg_arg),
+        ra(ra_arg),
+        dec(dec_arg),
         mag(mag_arg)
 {}
 
