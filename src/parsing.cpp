@@ -21,83 +21,24 @@ Star::Star(
 {}
 
 
-std::optional<double> parse_field(
-        const std::vector<std::string>& record,
-        const size_t index,
-        const std::string& field_name,
-        std::string& errmes
- ) noexcept {
-    double value;
-
-    try {
-        value = std::stod(record.at(index));
+constexpr uint8_t RA_FIELD = 24;
+constexpr uint8_t DEC_FIELD = 25;
+constexpr uint8_t BT_FIELD = 17;
+constexpr uint8_t VT_FIELD = 19;
+constexpr uint8_t MIN_FIELDS_COUNT = std::max(
+    {
+        RA_FIELD,
+        DEC_FIELD,
+        BT_FIELD,
+        VT_FIELD
     }
-    catch (const std::out_of_range&) {
-        errmes = (boost::format("Missing field: %1%") % field_name).str();
-        return {};
-    }
-    catch (const std::invalid_argument& e) {
-        errmes = (boost::format("Failed to parse %1%. (%2%)") % field_name % e.what()).str();
-        return {};
-    }
-    
-    return value;
-}
-
-
-std::optional<double> parse_magnitude(const std::vector<std::string>& record, std::string& errmes) noexcept {
-    std::string b_err, v_err;
-    const std::optional<double> bt_mag = parse_field(record, 17, "BT magnitude", b_err);
-    const std::optional<double> vt_mag = parse_field(record, 19, "VT magnitude", v_err);
-
-    if (bt_mag) {
-        const auto bt = bt_mag.value();
-        if (vt_mag) {
-            const auto vt = vt_mag.value();
-            return vt - 0.090 * (bt - vt);
-        } else {
-            return bt;
-        }
-    } else {
-        if (vt_mag) {
-            return vt_mag.value();
-        } else {
-            errmes = "Missing magnitude. ";
-            errmes += b_err;
-            errmes += ". ";
-            errmes += v_err;
-            return {};
-        }
-    }
-}
-
-
-std::optional<Star> parse_star_record(const std::vector<std::string>& record, std::string& errmes) noexcept {
-    const auto ra = parse_field(record, 24, "RA", errmes);
-    if (!ra.has_value())
-        return {};
-
-    const auto dec = parse_field(record, 25, "Dec", errmes);
-    if (!dec.has_value())
-        return {};
-
-    const auto mag = parse_magnitude(record, errmes);
-    if (!mag.has_value())
-        return {};
-
-    return Star(
-        ra.value(),
-        dec.value(),
-        mag.value()
-    );
-}
+) + 1;
 
 
 std::vector<Star> read_stars(const std::string& path) {
     std::vector<Star> stars;
     {
         std::vector<std::vector<std::string>> records;
-        float reading_elapsed;
         {
             std::vector<std::string> rows;
             {
@@ -127,19 +68,51 @@ std::vector<Star> read_stars(const std::string& path) {
             );
         }
 
+        stars.reserve(records.size());
         for (const auto& record : records) {
-            std::string errmes;
-            const auto star = parse_star_record(record, errmes);
-            if (not star.has_value())
+            if (record.size() < MIN_FIELDS_COUNT)
                 continue;
 
-            stars.push_back(star.value());
+            double ra, dec;
+            try {
+                ra = std::stod(record.at(RA_FIELD));
+                dec = std::stod(record.at(DEC_FIELD));
+            }
+            catch (const std::invalid_argument&) {
+                continue;
+            }
+
+            std::optional<double> bt_mag;
+            try {
+                bt_mag = std::stod(record.at(BT_FIELD));
+            } catch (const std::invalid_argument&) {}
+
+            std::optional<double> vt_mag;
+            try {
+                vt_mag = std::stod(record.at(VT_FIELD));
+            } catch (const std::invalid_argument&) {}
+
+            double mag;
+            if (bt_mag.has_value()) {
+                if (vt_mag.has_value()) {
+                    const auto vt = vt_mag.value();
+                    mag = vt - 0.090 * (bt_mag.value() - vt);
+                } else
+                    mag = bt_mag.value();
+            } else {
+                if (vt_mag.has_value())
+                    mag = vt_mag.value();
+                else
+                    continue;
+            }
+
+            stars.emplace_back(ra, dec, mag);
         }
-        stars.shrink_to_fit();
     }
 
+    stars.shrink_to_fit();
     return stars;
-};
+}
 
 
 } // namespace starfinder
