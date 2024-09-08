@@ -128,6 +128,7 @@ class Stopwatch {
     public:
         Stopwatch();
 
+        template <typename Duration = std::chrono::milliseconds>
         float elapsed() const;
 
     private:
@@ -142,20 +143,14 @@ Stopwatch<Clock>::Stopwatch():
 
 
 template <class Clock>
+template <typename Duration>
 float Stopwatch<Clock>::elapsed() const {
     const auto stop = Clock::now();
-    return static_cast<float>(std::chrono::duration_cast<std::chrono::milliseconds>(stop - start).count()) / 1000;
+    return static_cast<float>(std::chrono::duration_cast<Duration>(stop - start).count()) / Duration::period::den;
 }
 
 
-std::vector<Star> read_stars(
-        const std::string& path,
-        const double min_ra,
-        const double max_ra,
-        const double min_dec,
-        const double max_dec,
-        const double max_magnitude
-) {
+std::vector<Star> read_stars(const std::string& path) {
     std::vector<Star> stars;
     {
         std::vector<std::vector<std::string>> records;
@@ -207,22 +202,6 @@ std::vector<Star> read_stars(
                 continue;
             }
 
-            if (
-                    star->ra_deg < min_ra
-                    ||
-                    star->ra_deg > max_ra
-                    ||
-                    star->de_deg < min_dec
-                    ||
-                    star->de_deg > max_dec
-                    ||
-                    star->mag > max_magnitude
-            )
-                continue;
-
-            if ((i % 10000) == 0)
-                std::cout << boost::format("Star %1%: RA=%2%, Dec=%3%, Mag=%4%") % i % star->ra_deg % star->de_deg % star->mag << std::endl;
-
             stars.push_back(star.value());
         }
         stars.shrink_to_fit();
@@ -231,6 +210,42 @@ std::vector<Star> read_stars(
 
     return stars;
 };
+
+
+std::vector<Star> filter_stars(
+        const std::vector<Star>& all_stars,
+        const double min_ra,
+        const double max_ra,
+        const double min_dec,
+        const double max_dec,
+        const double max_magnitude
+) {
+    std::vector<Star> filtered_stars;
+    filtered_stars.reserve(all_stars.size());
+    const Stopwatch filtering;
+    std::copy_if(
+        std::execution::par,
+        all_stars.cbegin(),
+        all_stars.cend(),
+        std::back_inserter(filtered_stars),
+        [min_ra, max_ra, min_dec, max_dec, max_magnitude] (const Star& star) noexcept {
+            return (
+                star.ra_deg >= min_ra
+                &&
+                star.ra_deg <= max_ra
+                &&
+                star.de_deg >= min_dec
+                &&
+                star.de_deg <= max_dec
+                &&
+                star.mag <= max_magnitude
+            );
+        }
+    );
+    std::cout << "Time taken to filtering: " << filtering.elapsed<std::chrono::microseconds>() << std::endl;
+    filtered_stars.shrink_to_fit();
+    return filtered_stars;
+}
 
 
 void render_stars(
@@ -340,8 +355,8 @@ int main(int argc, char** argv) {
     std::cout << boost::format("Dec range: %1% to %2%") % vm[OPT_MIN_DEC].as<double>() % vm[OPT_MAX_DEC].as<double>() << std::endl;
     std::cout << boost::format("Max magnitude: %1%") % vm[OPT_MAX_MAGNITUDE].as<double>() << std::endl;
 
-    const auto stars = read_stars(
-        vm[OPT_FILE].as<std::string>(),
+    const auto stars = filter_stars(
+        read_stars(vm[OPT_FILE].as<std::string>()),
         vm[OPT_MIN_RA].as<double>(),
         vm[OPT_MAX_RA].as<double>(),
         vm[OPT_MIN_DEC].as<double>(),
